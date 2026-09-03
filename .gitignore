@@ -1,0 +1,14 @@
+# 打包产物
+build/
+dist/
+*.spec
+
+# Python
+__pycache__/
+*.pyc
+
+# 错误日志
+orphan_scanner_errors.log
+
+# 回收站数据(应用运行生成)
+.OrphanTrash/
