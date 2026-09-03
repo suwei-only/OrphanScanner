@@ -12,3 +12,6 @@ orphan_scanner_errors.log
 
 # 回收站数据(应用运行生成)
 .OrphanTrash/
+
+# 反馈 SMTP 配置(含授权码,绝不提交!)
+feedback_config.py

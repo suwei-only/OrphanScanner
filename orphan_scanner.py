@@ -750,6 +750,56 @@ def register_global_excepthook():
         pass
 
 
+def _load_cfg():
+    """加载配置:优先 exe/脚本同目录的 feedback_config.py(便于不重打包改配置),
+    否则用打包内嵌的默认配置"""
+    try:
+        import importlib.util
+        base = (os.path.dirname(sys.executable)
+                if getattr(sys, "frozen", False)
+                else os.path.dirname(os.path.abspath(__file__)))
+        ext = os.path.join(base, "feedback_config.py")
+        if os.path.isfile(ext):
+            spec = importlib.util.spec_from_file_location(
+                "feedback_config_ext", ext)
+            m = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(m)
+            return m
+    except Exception:
+        pass
+    try:
+        import feedback_config
+        return feedback_config
+    except Exception:
+        return None
+
+
+def send_feedback(body: str, subject: str = "") -> tuple:
+    """把反馈邮件发送给开发者(QQ 邮箱 SMTP)。
+    返回 (ok, msg)。配置见 feedback_config.py(已被 gitignore)"""
+    cfg = _load_cfg()
+    if cfg is None:
+        return False, "未配置自动发送(缺少 feedback_config.py)"
+    if not cfg.FEEDBACK_AUTH_CODE:
+        return False, "未配置 SMTP 授权码(见 feedback_config.py 说明)"
+    try:
+        import smtplib
+        from email.mime.text import MIMEText
+        from email.header import Header
+        subject = subject or f"OrphanScanner v{APP_VERSION} 用户反馈"
+        msg = MIMEText(body, "plain", "utf-8")
+        msg["Subject"] = Header(subject, "utf-8")
+        msg["From"] = cfg.FEEDBACK_USER
+        msg["To"] = cfg.FEEDBACK_TO
+        with smtplib.SMTP_SSL("smtp.qq.com", 465, timeout=30) as s:
+            s.login(cfg.FEEDBACK_USER, cfg.FEEDBACK_AUTH_CODE)
+            s.sendmail(cfg.FEEDBACK_USER, [cfg.FEEDBACK_TO],
+                       msg.as_string())
+        return True, f"已发送到 {cfg.FEEDBACK_TO}"
+    except Exception as e:
+        return False, f"发送失败: {e}"
+
+
 # ---------------- 主流程 ----------------
 def main():
     args = sys.argv[1:]

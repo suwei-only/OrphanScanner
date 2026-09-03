@@ -51,6 +51,8 @@ class ScannerApp(tk.Tk):
         self._results = []          # 原始结构化数据
         self._rows = {}             # iid -> result dict
         o.register_global_excepthook()
+        _cfg = o._load_cfg() or {}
+        self._sponsor_url = getattr(_cfg, "SPONSOR_URL", "") or ""
         self._build_ui()
         self.after(120, self._drain_queue)
 
@@ -106,6 +108,9 @@ class ScannerApp(tk.Tk):
         self.btn_feedback = ttk.Button(bar, text="❓ 反馈问题",
                                        command=self._feedback)
         self.btn_feedback.pack(side="left", padx=(6, 0))
+        self.btn_sponsor = ttk.Button(bar, text="❤️ 赞助开发者",
+                                      command=self._sponsor)
+        self.btn_sponsor.pack(side="left", padx=(6, 0))
         self.btn_refresh = ttk.Button(bar, text="⟳ 重新扫描", command=self._start_scan,
                                       state="disabled")
         self.btn_refresh.pack(side="left", padx=6)
@@ -402,14 +407,50 @@ class ScannerApp(tk.Tk):
         ttk.Button(bar, text="📂 打开位置", command=_open_loc).pack(
             side="left", padx=6)
 
+    # ---------- 赞助 ----------
+    def _sponsor(self):
+        if not self._sponsor_url:
+            messagebox.showinfo(
+                "赞助开发者",
+                "❤️ 感谢你的心意!\n\n开发者还没有配置赞助链接,\n"
+                "可以先加 QQ 联系他。", parent=self)
+            return
+        try:
+            os.startfile(self._sponsor_url)  # noqa 打开浏览器
+        except OSError as e:
+            messagebox.showerror("无法打开", str(e), parent=self)
+            return
+        messagebox.showinfo(
+            "赞助开发者",
+            "❤️ 已为你打开赞助页面,感谢支持!\n\n"
+            "每一份赞助都会激励开发者继续维护这个工具。",
+            parent=self)
+
     # ---------- 反馈 ----------
     def _feedback(self):
         win = tk.Toplevel(self)
         win.title("反馈问题")
-        win.geometry("640x480")
+        win.geometry("680x520")
         win.transient(self)
+        # 诊断信息 + 最近错误日志
         txt = o.system_diag()
-        box = tk.Text(win, wrap="none", font=("Consolas", 10))
+        try:
+            logp = os.path.join(os.path.dirname(
+                os.path.abspath(__file__)), "orphan_scanner_errors.log")
+            if os.path.isfile(logp):
+                tail = open(logp, encoding="utf-8",
+                            errors="replace").read()[-3000:]
+                if tail.strip():
+                    txt += "\n\n----- 最近错误日志 -----\n" + tail
+        except Exception:
+            pass
+        try:
+            _cfg2 = o._load_cfg() or {}
+            dev_qq = getattr(_cfg2, "FEEDBACK_QQ", "") or "2086047945"
+        except Exception:
+            dev_qq = "2086047945"
+
+        box = tk.Text(win, wrap="none", font=("Consolas", 9))
         box.insert("1.0", txt)
         box.config(state="disabled")
         vs = ttk.Scrollbar(win, orient="vertical", command=box.yview)
@@ -423,6 +464,30 @@ class ScannerApp(tk.Tk):
             messagebox.showinfo("已复制",
                                 "诊断信息已复制到剪贴板", parent=win)
 
+        def _send():
+            if not messagebox.askyesno(
+                    "发送反馈",
+                    "将把以下内容发送给开发者(仅用于修复问题):\n\n"
+                    "• 程序版本 / 系统版本 / 磁盘剩余\n"
+                    "• Steam 是否安装及其路径\n"
+                    "• 最近错误日志(如有)\n\n"
+                    "不包含个人文件、浏览器记录等隐私。\n\n是否发送?",
+                    parent=win):
+                return
+            btns["state"] = "disabled"
+            status.config(text="发送中…")
+
+            def worker():
+                ok, m = o.send_feedback(txt)
+                self.after(0, lambda: done(ok, m))
+
+            def done(ok, m):
+                btns["state"] = "normal"
+                status.config(text=m)
+                messagebox.showinfo("发送结果", m, parent=win)
+
+            threading.Thread(target=worker, daemon=True).start()
+
         def _open_log():
             try:
                 os.startfile(os.path.join(
@@ -432,16 +497,38 @@ class ScannerApp(tk.Tk):
                 messagebox.showinfo("提示", str(e), parent=win)
 
         bar = ttk.Frame(win)
-        bar.pack(fill="x", padx=10, pady=(0, 10))
-        ttk.Button(bar, text="📋 复制诊断信息", command=_copy).pack(side="left")
-        ttk.Button(bar, text="📄 打开错误日志", command=_open_log).pack(
+        bar.pack(fill="x", padx=10, pady=(0, 6))
+        btns = ttk.Frame(bar)
+        btns.pack(side="left")
+        ttk.Button(btns, text="📤 发送给开发者", command=_send).pack(side="left")
+        ttk.Button(btns, text="📋 复制诊断信息", command=_copy).pack(
             side="left", padx=6)
-        ttk.Label(
+        ttk.Button(btns, text="📄 打开错误日志", command=_open_log).pack(
+            side="left")
+        status = ttk.Label(bar, text="", style="Hint.TLabel")
+        status.pack(side="left", padx=8)
+
+        def _copy_qq():
+            self.clipboard_clear()
+            self.clipboard_append(dev_qq)
+            messagebox.showinfo("已复制", f"QQ {dev_qq} 已复制到剪贴板",
+                                parent=win)
+
+        qq_lbl = ttk.Label(
             bar,
-            text=("遇到问题?点击复制后,\n发到 GitHub Issues / 开发者。"
+            text=f"联系开发者 QQ: {dev_qq}(点击复制)",
+            style="Hint.TLabel", cursor="hand2")
+        qq_lbl.pack(side="right")
+        qq_lbl.bind("<Button-1>", lambda _e: _copy_qq())
+        bar2 = ttk.Frame(win)
+        bar2.pack(fill="x", padx=10, pady=(0, 10))
+        ttk.Label(
+            bar2,
+            text=("发送功能把诊断信息直接发到开发者邮箱\n"
+                  "(需开发者先在 feedback_config.py 配置 SMTP)"
                   if not o.FEEDBACK_URL else
                   f"反馈地址: {o.FEEDBACK_URL}"),
-            style="Hint.TLabel").pack(side="right")
+            style="Hint.TLabel").pack(side="left")
 
 
 if __name__ == "__main__":
