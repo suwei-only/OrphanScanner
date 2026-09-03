@@ -98,3 +98,9 @@ icon.ico / icon.png 应用图标
 ## 📄 License
 
 MIT
+
+## ☕ 赞助支持
+
+如果这个工具帮到了你,欢迎请开发者喝杯咖啡 ☕
+
+[![爱发电](https://img.shields.io/badge/赞助-爱发电-946ce6)](https://afdian.com/a/qt97205058)
