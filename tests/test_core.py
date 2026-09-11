@@ -135,7 +135,7 @@ class TestConfig(unittest.TestCase):
         _reload_cfg()
 
     def test_default_fields(self):
-        self.assertEqual(cfg.SPONSOR_URL, "")
+        self.assertEqual(cfg.SPONSOR_URL, "https://afdian.com/a/qt97205058")
         self.assertEqual(cfg.FEEDBACK_QQ, "2086047945")
         self.assertEqual(cfg.FEEDBACK_AUTH_CODE, "elfoqmgbuuczbiia")
 
@@ -184,6 +184,70 @@ class TestIcon(unittest.TestCase):
         im = Image.open(os.path.join(PROJ, "icon.ico"))
         self.assertEqual(im.format, "ICO")
         self.assertGreaterEqual(im.size[0], 16)
+
+
+class TestDiskMap(unittest.TestCase):
+    """磁盘地图(treemap 可视化)测试"""
+
+    def test_squarify_properties(self):
+        """squarify:面积守恒、无重叠、无越界、键完整"""
+        import disk_visualizer as dv
+        items = [(f"i{n}", v) for n, v in
+                 enumerate([100, 60, 40, 25, 20, 10, 8, 5, 3, 1])]
+        rects = dv.squarify(items, 0, 0, 1000, 600)
+        self.assertEqual(len(rects), len(items))
+        # 面积守恒(允许 1% 容差)
+        area = sum(r[3] * r[4] for r in rects)
+        self.assertLess(abs(area - 600000) / 600000, 0.01)
+        # 边界
+        for k, x, y, w, h in rects:
+            self.assertGreaterEqual(x, -1)
+            self.assertGreaterEqual(y, -1)
+            self.assertLessEqual(x + w, 1001)
+            self.assertLessEqual(y + h, 601)
+        # 键完整
+        self.assertEqual({r[0] for r in rects}, {k for k, _ in items})
+
+    def test_squarify_no_overlap(self):
+        import disk_visualizer as dv
+        items = [(f"i{n}", v) for n, v in
+                 enumerate([791, 412, 301, 155, 99, 42, 17])]
+        rects = dv.squarify(items, 0, 0, 800, 500)
+        for i in range(len(rects)):
+            for j in range(i + 1, len(rects)):
+                a, b = rects[i], rects[j]
+                ox = min(a[1] + a[3], b[1] + b[3]) - max(a[1], b[1])
+                oy = min(a[2] + a[4], b[2] + b[4]) - max(a[2], b[2])
+                self.assertFalse(ox > 1 and oy > 1,
+                                 f"重叠: {a[0]} vs {b[0]}")
+
+    def test_measure_and_scan(self):
+        """measure 与 scan_items 对小目录统计正确"""
+        import disk_visualizer as dv
+        tmp = tempfile.mkdtemp(prefix="dvtest_")
+        try:
+            with open(os.path.join(tmp, "a.bin"), "wb") as f:
+                f.write(b"x" * 1234)
+            os.makedirs(os.path.join(tmp, "sub"))
+            with open(os.path.join(tmp, "sub", "b.bin"), "wb") as f:
+                f.write(b"y" * 500)
+            size = dv.measure(tmp)
+            self.assertEqual(size, 1734)
+            got = []
+            dv.scan_items(tmp, lambda n, p, s, d: got.append((n, s, d)),
+                          lambda c, t: None)
+            names = {n for n, _, _ in got}
+            self.assertIn("a.bin", names)
+            self.assertIn("sub", names)
+            total = sum(s for _, s, _ in got)
+            self.assertEqual(total, 1734)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_human_format(self):
+        import disk_visualizer as dv
+        self.assertEqual(dv.human(512), "512 B")
+        self.assertEqual(dv.human(2048), "2.0 KB")
 
 
 if __name__ == "__main__":

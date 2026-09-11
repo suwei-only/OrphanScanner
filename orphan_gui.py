@@ -108,6 +108,9 @@ class ScannerApp(tk.Tk):
         self.btn_feedback = ttk.Button(bar, text="❓ 反馈问题",
                                        command=self._feedback)
         self.btn_feedback.pack(side="left", padx=(6, 0))
+        self.btn_diskmap = ttk.Button(bar, text="📊 磁盘地图",
+                                      command=self._open_diskmap)
+        self.btn_diskmap.pack(side="left", padx=(6, 0))
         self.btn_sponsor = ttk.Button(bar, text="❤️ 赞助开发者",
                                       command=self._sponsor)
         self.btn_sponsor.pack(side="left", padx=(6, 0))
@@ -406,6 +409,24 @@ class ScannerApp(tk.Tk):
                 os.startfile(os.path.dirname(p))  # noqa
         ttk.Button(bar, text="📂 打开位置", command=_open_loc).pack(
             side="left", padx=6)
+
+    # ---------- 磁盘地图 ----------
+    def _open_diskmap(self):
+        try:
+            import disk_visualizer as dv
+        except ImportError as e:
+            messagebox.showerror("无法打开", f"磁盘地图模块缺失: {e}")
+            return
+
+        def on_trash(path):
+            ok, msg, _meta = o.move_to_trash(path)
+            self._refresh_trash_badge()
+            return ok, msg
+
+        try:
+            dv.DiskMapWindow(self, on_trash=on_trash)
+        except Exception as e:
+            messagebox.showerror("无法打开磁盘地图", str(e))
 
     # ---------- 赞助 ----------
     def _sponsor(self):
