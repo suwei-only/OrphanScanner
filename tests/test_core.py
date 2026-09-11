@@ -249,6 +249,57 @@ class TestDiskMap(unittest.TestCase):
         self.assertEqual(dv.human(512), "512 B")
         self.assertEqual(dv.human(2048), "2.0 KB")
 
+    def test_tree_builder_structure(self):
+        """TreeBuilder:目录/大文件/小文件聚合/大小汇总"""
+        import disk_visualizer as dv
+        tmp = tempfile.mkdtemp(prefix="dv3_")
+        try:
+            os.makedirs(os.path.join(tmp, "sub", "inner"))
+            with open(os.path.join(tmp, "big.bin"), "wb") as f:
+                f.write(b"x" * (6 * 1024 * 1024))
+            for i in range(3):
+                with open(os.path.join(tmp, f"small{i}.bin"), "wb") as f:
+                    f.write(b"y" * 1000)
+            with open(os.path.join(tmp, "sub", "inner", "inner.bin"),
+                      "wb") as f:
+                f.write(b"z" * (7 * 1024 * 1024))
+            b = dv.TreeBuilder()
+            root = b.build(tmp)
+            self.assertEqual(root.size,
+                             6 * 1024 * 1024 + 3000 + 7 * 1024 * 1024)
+            rmap = {c.name: c for c in root.children}
+            # 大文件单独节点
+            self.assertEqual(rmap["big.bin"].size, 6 * 1024 * 1024)
+            # 小文件聚合
+            self.assertEqual(rmap["(3个小文件)"].size, 3000)
+            self.assertTrue(rmap["(3个小文件)"].agg)
+            # 嵌套结构
+            sub = rmap["sub"]
+            inner = sub.children[0]
+            self.assertEqual(inner.name, "inner")
+            self.assertEqual(inner.children[0].name, "inner.bin")
+            self.assertEqual(inner.children[0].size, 7 * 1024 * 1024)
+            # 计数
+            self.assertEqual(b.dirs_seen, 3)
+            self.assertEqual(b.files_seen, 5)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_tree_builder_budget(self):
+        """TreeBuilder: max_files 预算截断保护"""
+        import disk_visualizer as dv
+        tmp = tempfile.mkdtemp(prefix="dv3b_")
+        try:
+            for i in range(10):
+                with open(os.path.join(tmp, f"f{i}.bin"), "wb") as f:
+                    f.write(b"x" * 100)
+            b = dv.TreeBuilder(big_file=50, max_files=4)
+            root = b.build(tmp)
+            self.assertTrue(b.truncated)
+            self.assertEqual(b.files_seen, 4)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
