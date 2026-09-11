@@ -367,7 +367,7 @@ def heuristic_candidates(roots, min_size=200_000_000):
     return cands
 
 # ---------------- GUI / 结构化 API ----------------
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 TRASH_DIR_NAME = ".OrphanTrash"   # 应用回收站(可还原,不直接物理删除)
 
 
