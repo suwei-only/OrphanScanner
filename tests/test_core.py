@@ -301,5 +301,269 @@ class TestDiskMap(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+class TestAppIdentity(unittest.TestCase):
+    """应用归属识别(纯函数,注入 sources,零外部依赖)"""
+
+    def test_kb_component_match(self):
+        import app_identity as ai
+        tmp = tempfile.mkdtemp(prefix="ai_")
+        try:
+            wc = os.path.join(tmp, "WeChat Files")
+            os.makedirs(os.path.join(wc, "wxid_x"), exist_ok=True)
+            disp, src = ai.identify(os.path.join(wc, "wxid_x"), sources=[])
+            self.assertEqual(disp, "微信(腾讯)")
+            self.assertEqual(src, "内置知识库")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_case_insensitive(self):
+        import app_identity as ai
+        tmp = tempfile.mkdtemp(prefix="ai_")
+        try:
+            wc = os.path.join(tmp, "wechat files")
+            os.makedirs(wc, exist_ok=True)
+            disp, _ = ai.identify(wc.upper(), sources=[])
+            self.assertEqual(disp, "微信(腾讯)")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_prefix_deepest_match(self):
+        import app_identity as ai
+        srcs = [
+            (os.path.normcase(r"C:\Apps"), "根应用", "注册表卸载项"),
+            (os.path.normcase(r"C:\Apps\Sub"), "子应用", "注册表卸载项"),
+        ]
+        disp, _ = ai.identify(r"C:\Apps\Sub\bin\x.exe", sources=srcs)
+        self.assertEqual(disp, "子应用")
+
+    def test_source_priority_same_depth(self):
+        import app_identity as ai
+        srcs = [
+            (os.path.normcase(r"C:\Apps"), "注册表应用", "注册表卸载项"),
+            (os.path.normcase(r"C:\Apps"), "进程应用", "运行中的程序"),
+        ]
+        disp, src = ai.identify(r"C:\Apps\x.exe", sources=srcs)
+        self.assertEqual((disp, src), ("注册表应用", "注册表卸载项"))
+
+    def test_kb_loses_to_registry(self):
+        import app_identity as ai
+        tmp = tempfile.mkdtemp(prefix="ai_")
+        try:
+            wc = os.path.join(tmp, "WeChat Files")
+            os.makedirs(wc, exist_ok=True)
+            srcs = [(os.path.normcase(tmp), "临时工具", "注册表卸载项")]
+            disp, src = ai.identify(wc, sources=srcs)
+            self.assertEqual(disp, "临时工具")
+            self.assertEqual(src, "注册表卸载项")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_unknown(self):
+        import app_identity as ai
+        tmp = tempfile.mkdtemp(prefix="ai_unknown_")
+        try:
+            disp, src = ai.identify(tmp, sources=[])
+            self.assertIsNone(disp)
+            self.assertIsNone(src)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_sources_cache(self):
+        import app_identity as ai
+        calls = []
+        orig = ai._collect_sources
+
+        def fake():
+            calls.append(1)
+            return []
+        ai._collect_sources = fake
+        try:
+            ai.invalidate_cache()
+            ai.get_sources()
+            ai.get_sources()
+            self.assertEqual(len(calls), 1)
+            ai.invalidate_cache()
+            ai.get_sources()
+            self.assertEqual(len(calls), 2)
+        finally:
+            ai._collect_sources = orig
+            ai.invalidate_cache()
+
+
+class TestFullScan(unittest.TestCase):
+    """全盘扫描底层:卷枚举 / NTFS 分配大小 / 硬链接文件ID"""
+
+    def test_list_volumes(self):
+        import full_scan as fs
+        vols = fs.list_volumes()
+        self.assertTrue(vols)
+        letters = [v[0] for v in vols]
+        self.assertIn("C", letters)
+        for letter, label, free, total in vols:
+            self.assertIsInstance(free, int)
+            self.assertGreater(total, 0)
+        frees = [v[2] for v in vols]
+        self.assertEqual(frees, sorted(frees))   # 剩余最少在前
+
+    def test_file_alloc_links(self):
+        import full_scan as fs
+        tmp = tempfile.mkdtemp(prefix="fs_")
+        try:
+            p = os.path.join(tmp, "a.bin")
+            with open(p, "wb") as f:
+                f.write(b"x" * 1234)
+            got = fs.file_alloc_links(p)
+            self.assertIsNotNone(got)
+            alloc, nlink = got
+            self.assertGreaterEqual(alloc, 1234)   # 簇对齐,分配>=表观
+            self.assertEqual(nlink, 1)
+            self.assertIsNone(
+                fs.file_alloc_links(os.path.join(tmp, "nope.bin")))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_file_id_hardlink(self):
+        import full_scan as fs
+        tmp = tempfile.mkdtemp(prefix="fs_")
+        try:
+            p1 = os.path.join(tmp, "orig.bin")
+            p2 = os.path.join(tmp, "link.bin")
+            with open(p1, "wb") as f:
+                f.write(b"y" * 4096)
+            try:
+                os.link(p1, p2)
+            except OSError:
+                self.skipTest("文件系统不支持硬链接")
+            self.assertTrue(os.path.samefile(p1, p2))
+            id1, id2 = fs.get_file_id(p1), fs.get_file_id(p2)
+            self.assertIsNotNone(id1)
+            self.assertEqual(id1, id2)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_alloc_supported(self):
+        import full_scan as fs
+        self.assertTrue(fs.alloc_supported("C:\\"))
+
+
+class TestProtectedPath(unittest.TestCase):
+    """系统目录拒删铁律(零副作用:只判定,不真删)"""
+
+    def test_protected(self):
+        for p in (r"C:\Windows", r"C:\Windows\System32\drivers",
+                  r"D:\Program Files", r"C:\Program Files (x86)\App",
+                  r"C:\ProgramData\X", r"E:\System Volume Information",
+                  r"D:\$Recycle.Bin", r"C:\pagefile.sys",
+                  r"C:\hiberfil.sys", r"C:\swapfile.sys"):
+            self.assertTrue(o.is_protected_path(p), p)
+
+    def test_not_protected(self):
+        for p in (os.path.expanduser("~"), tempfile.gettempdir(),
+                  r"D:\Games\MyGame", r"D:\windows_tools"):
+            self.assertFalse(o.is_protected_path(p), p)
+
+    def test_move_to_trash_rejects(self):
+        ok, msg, meta = o.move_to_trash(r"C:\Windows")
+        self.assertFalse(ok)
+        self.assertIn("受保护", msg)
+        self.assertIsNone(meta)
+
+
+class TestMarkAbsorb(unittest.TestCase):
+    """标记待删:目录吸收内部标记(不可反向)+ 新 TreeBuilder 能力"""
+
+    def test_is_descendant(self):
+        import disk_visualizer as dv
+        root = dv.Node("r", "/r", 0, True)
+        a = dv.Node("a", "/r/a", 0, True, root)
+        b = dv.Node("b", "/r/a/b", 0, False, a)
+        c = dv.Node("c", "/r/c", 0, False, root)
+        self.assertTrue(dv.is_descendant(a, root))
+        self.assertTrue(dv.is_descendant(b, a))
+        self.assertTrue(dv.is_descendant(root, root))
+        self.assertFalse(dv.is_descendant(c, a))
+
+    def test_absorb_irreversible(self):
+        import disk_visualizer as dv
+        root = dv.Node("r", "/r", 0, True)
+        a = dv.Node("a", "/r/a", 0, True, root)
+        b = dv.Node("b", "/r/a/b", 0, False, a)
+        c = dv.Node("c", "/r/c", 0, False, root)
+        marked = [b, c]
+        marked2 = dv.absorb_marked(marked, a)   # 标记目录 a → 吸收 b
+        self.assertEqual(set(marked2), {c, a})
+        m3 = dv.absorb_marked(marked2, a)       # 幂等
+        self.assertEqual(m3, marked2)
+        m4 = [m for m in marked2 if m is not a]  # 取消目录标记
+        self.assertNotIn(b, m4)                  # 不可反向:不恢复内部项
+
+    def test_treebuilder_alloc_and_dedupe(self):
+        import disk_visualizer as dv
+        tmp = tempfile.mkdtemp(prefix="dv15_")
+        try:
+            with open(os.path.join(tmp, "big.bin"), "wb") as f:
+                f.write(b"x" * (6 * 1024 * 1024))
+            try:
+                os.link(os.path.join(tmp, "big.bin"),
+                        os.path.join(tmp, "big_link.bin"))
+            except OSError:
+                self.skipTest("文件系统不支持硬链接")
+            b = dv.TreeBuilder(use_alloc=True, dedupe_hardlinks=True)
+            root = b.build(tmp)
+            self.assertTrue(b.alloc_ok)
+            # 去重:硬链接只计一次;分配大小簇对齐,允许略大于表观 6MB
+            self.assertGreaterEqual(root.size, 6 * 1024 * 1024)
+            self.assertLess(root.size, 6 * 1024 * 1024 + 1024 * 1024)
+            self.assertGreaterEqual(b.dup_saved, 6 * 1024 * 1024)
+            self.assertEqual(root.file_count, 1)
+            self.assertGreater(root.mtime, 0)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_treebuilder_missing_root_no_crash(self):
+        import disk_visualizer as dv
+        b = dv.TreeBuilder()
+        root = b.build(tempfile.mkdtemp(prefix="dv_ok_") + "_nope")
+        self.assertEqual(root.size, 0)
+        self.assertTrue(b.skipped)   # 不存在的根被记录为跳过,不崩溃
+
+    def test_diskmap_window_smoke(self):
+        import time
+        import tkinter as tk
+        import disk_visualizer as dv
+        tmp = tempfile.mkdtemp(prefix="dvwin_")
+        try:
+            with open(os.path.join(tmp, "a.bin"), "wb") as f:
+                f.write(b"x" * 3000)
+            root = tk.Tk()
+            root.withdraw()
+            try:
+                win = dv.DiskMapWindow(root)
+                win._start(tmp)
+                t0 = time.time()
+                while time.time() - t0 < 15 and not win._done_flag:
+                    root.update()
+                    time.sleep(0.05)
+                root.update()
+                self.assertTrue(win._done_flag)
+                self.assertGreater(win._show_root.size, 0)
+                self.assertTrue(win._rect_nodes)
+                node = next((n for n, *_ in win._rect_nodes
+                             if not n.agg and n.path), None)
+                if node is not None:
+                    win._pick = node
+                    win._toggle_mark()
+                    self.assertEqual(len(win._marked), 1)
+                    self.assertIn(node, win._marked)
+                win.destroy()
+            finally:
+                try:
+                    root.destroy()
+                except Exception:
+                    pass
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

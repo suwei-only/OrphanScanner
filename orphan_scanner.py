@@ -367,7 +367,7 @@ def heuristic_candidates(roots, min_size=200_000_000):
     return cands
 
 # ---------------- GUI / 结构化 API ----------------
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.5.0"
 TRASH_DIR_NAME = ".OrphanTrash"   # 应用回收站(可还原,不直接物理删除)
 
 
@@ -414,11 +414,45 @@ def trash_items() -> list:
     return out
 
 
+PROTECTED_TOP_DIRS = (
+    r"C:\Windows",
+    r"C:\Program Files",
+    r"C:\Program Files (x86)",
+    r"C:\ProgramData",
+)
+PROTECTED_NAMES = {
+    "windows", "program files", "program files (x86)", "programdata",
+    "system volume information", "$recycle.bin",
+    "pagefile.sys", "hiberfil.sys", "swapfile.sys",
+}
+
+
+def is_protected_path(path: str) -> bool:
+    """系统受保护路径判定(删除安全铁律):
+    Windows / Program Files / ProgramData 目录树(任意盘)、
+    System Volume Information、$Recycle.Bin、页面/休眠/交换文件。
+    逐级组件全等匹配,不误伤形如 'windows_tools' 的普通目录。"""
+    if not path:
+        return True
+    p = os.path.normcase(os.path.normpath(os.path.abspath(path)))
+    for top in PROTECTED_TOP_DIRS:
+        ntop = os.path.normcase(top)
+        if p == ntop or p.startswith(ntop + os.sep):
+            return True
+    _drive, tail = os.path.splitdrive(p)
+    parts = [x for x in tail.split(os.sep) if x]
+    if any(x.lower() in PROTECTED_NAMES for x in parts):
+        return True
+    return False
+
+
 def move_to_trash(path: str) -> tuple:
     """把文件/目录移入回收站(同盘 rename,瞬时完成,可还原)
     返回 (ok, msg, meta条目或None)"""
     if not os.path.exists(path):
         return False, f"路径不存在: {path}", None
+    if is_protected_path(path):
+        return False, f"系统受保护路径,拒绝删除: {path}", None
     trash = trash_root(path)
     name = os.path.basename(path.rstrip("\\/")) or "item"
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
